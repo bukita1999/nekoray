@@ -15,7 +15,7 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v3
       with:
-        submodules: 'recursive'  # 确保获取所有子模块
+        submodules: 'recursive'
     
     - name: Set up Visual Studio environment
       uses: microsoft/setup-msbuild@v1.1
