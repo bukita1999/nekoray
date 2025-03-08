@@ -1,0 +1,123 @@
+name: Build Nekoray for Windows ARM64
+
+on:
+  workflow_dispatch:  # 允许手动触发
+  push:
+    branches: [ main, master ]  # 当推送到主分支时
+  pull_request:
+    branches: [ main, master ]  # 当提交PR到主分支时
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        submodules: 'recursive'  # 确保获取所有子模块
+    
+    - name: Set up Visual Studio environment
+      uses: microsoft/setup-msbuild@v1.1
+    
+    - name: Install dependencies
+      run: |
+        # 安装 Chocolatey 包
+        choco install ninja cmake -y
+        
+        # 设置 Git 配置
+        git config --global core.autocrlf false
+        git config --global core.eol lf
+    
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v3
+      with:
+        version: '6.5.0'
+        host: 'windows'
+        target: 'desktop'
+        arch: 'win64_msvc2019_64'  # 目前用x64版Qt，后续交叉编译
+        tools: 'tools_ninja tools_cmake'
+    
+    - name: Setup Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.20'
+    
+    - name: Install MSVC for ARM64
+      shell: pwsh
+      run: |
+        # 安装 Visual Studio ARM64 组件
+        & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe" modify `
+          --installPath "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\Enterprise" `
+          --add Microsoft.VisualStudio.Component.VC.Tools.ARM64 `
+          --add Microsoft.VisualStudio.Component.VC.Tools.ARM64.Spectre `
+          --quiet --norestart --wait
+    
+    - name: Build C/C++ dependencies
+      shell: bash
+      run: |
+        # 修改依赖构建脚本以支持ARM64
+        sed -i 's/-DCMAKE_GENERATOR=Ninja/-DCMAKE_GENERATOR=Ninja -DCMAKE_SYSTEM_PROCESSOR=ARM64 -DCMAKE_SYSTEM_NAME=Windows/g' libs/build_deps_all.sh
+        bash ./libs/build_deps_all.sh
+      
+    - name: Configure CMake for ARM64
+      shell: cmd
+      run: |
+        mkdir build
+        cd build
+        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsamd64_arm64.bat"
+        cmake -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_PROCESSOR=ARM64 -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_PREFIX_PATH=%Qt6_DIR% ..
+    
+    - name: Build C++ part
+      shell: cmd
+      run: |
+        cd build
+        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsamd64_arm64.bat"
+        ninja
+    
+    - name: Build Go parts for ARM64
+      shell: cmd
+      run: |
+        SET GOOS=windows
+        SET GOARCH=arm64
+        cd go\cmd\nekobox_core
+        go build -o nekobox_core.exe
+        cd ..\updater
+        go build -o updater.exe
+        copy nekobox_core.exe ..\..\..\build\
+        copy updater.exe ..\..\..\build\
+    
+    - name: Qt Deploy
+      shell: cmd
+      run: |
+        cd build
+        %Qt6_DIR%\bin\windeployqt.exe --release nekobox.exe
+    
+    - name: Package application
+      shell: cmd
+      run: |
+        cd build
+        mkdir ..\nekoray-windows-arm64
+        copy *.exe ..\nekoray-windows-arm64\
+        copy *.dll ..\nekoray-windows-arm64\
+        xcopy /E /I translations ..\nekoray-windows-arm64\translations
+        xcopy /E /I platforms ..\nekoray-windows-arm64\platforms
+        xcopy /E /I styles ..\nekoray-windows-arm64\styles
+        xcopy /E /I imageformats ..\nekoray-windows-arm64\imageformats
+        
+        cd ..
+        powershell Compress-Archive -Path nekoray-windows-arm64 -DestinationPath nekoray-windows-arm64.zip
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: nekoray-windows-arm64
+        path: nekoray-windows-arm64.zip
+        
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        files: nekoray-windows-arm64.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
